@@ -1,0 +1,11 @@
+pandas>=2.1
+pyarrow>=14
+numpy>=1.26
+requests>=2.31
+streamlit>=1.40
+plotly>=5.24
+matplotlib>=3.8
+# Opcional (mapa coroplético por município):
+geobr>=0.2
+geopandas>=0.14
+# PySUS NÃO é mais necessário: os .dbc são lidos por dbc.py (Python puro).
