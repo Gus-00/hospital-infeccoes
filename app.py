@@ -2,13 +2,16 @@
 Rodar:  streamlit run app.py
 """
 import math
+import textwrap
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+import estilo
 from config import ANOS, DEMO, GRUPOS_CID, ISOLAMENTO_PADRAO, LEITOS_ISOLAMENTO_CODLEITO, REAL
+from mapa import agregar, dissolver, fora_do_mapa, taxa_eb
 
 st.set_page_config(page_title="Infecções e demanda de isolamento", layout="wide")
 MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
@@ -48,16 +51,31 @@ def csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
 
 
-def figura_mapa(gdf, coluna: str, rotulo: str):
-    """Coroplético por município. Usa a API nova do plotly quando existe."""
-    x0, y0, x1, y1 = gdf.total_bounds
-    centro = {"lat": float((y0 + y1) / 2), "lon": float((x0 + x1) / 2)}
-    args = dict(geojson=gdf.__geo_interface__, locations=gdf.index, color=coluna,
-                hover_name="name_muni", opacity=0.75, zoom=5.5, center=centro,
-                labels={coluna: rotulo}, color_continuous_scale="Reds")
-    if hasattr(px, "choropleth_map"):
-        return px.choropleth_map(gdf, map_style="carto-positron", **args)
-    return px.choropleth_mapbox(gdf, mapbox_style="carto-positron", **args)
+ARQ_MALHA = REAL / "geo_municipios.parquet"  # malha vale para real e demo (não é fictícia)
+NIVEIS_MAPA = {"Município": "municipio", "Região de saúde": "regiao",
+               "Macrorregião de saúde": "macro"}
+# indicador -> (tipo, rótulo da contagem); tipos: contagem, taxa, eb, leitos
+INDICADORES = {
+    "Internações SIH (residência)": ("contagem", "Internações"),
+    "Taxa de internação SIH por 100 mil hab./ano": ("taxa", "Internações"),
+    "Taxa de internação SIH suavizada (bayesiano empírico)": ("eb", "Internações"),
+    "Casos de SRAG (município de notificação)": ("contagem", "Casos"),
+    "Taxa de SRAG por 100 mil hab./ano (município de notificação)": ("taxa", "Casos"),
+    "Leitos existentes por 10 mil hab. (CNES)": ("leitos", "Leitos"),
+}
+
+
+@st.cache_resource(show_spinner=False)
+def carregar_malha():
+    import geopandas as gpd  # import tardio: só a aba Mapa precisa
+    return gpd.read_parquet(ARQ_MALHA)
+
+
+@st.cache_resource(show_spinner=False)
+def malha_nivel(nivel: str):
+    """Geometria por nível (regiões e macros são dissolvidas uma vez) e seu geojson."""
+    g = dissolver(carregar_malha(), nivel)
+    return g, g[["chave", "geometry"]].__geo_interface__
 
 
 # ---------------------------------------------------------------- sidebar
@@ -84,7 +102,7 @@ if not sih.empty and n_mes:
     corte = sih["dt_inter"].max().to_period("M").start_time - pd.DateOffset(months=n_mes - 1)
     sih = sih[sih["dt_inter"] < corte]
 if not srag.empty and n_sem:
-    srag = srag[srag["dt_notific"] <= srag["dt_notific"].max() - pd.Timedelta(weeks=int(n_sem))]
+    srag = srag[srag["dt_notific"] <= srag["dt_notific"].max() - pd.to_timedelta(n_sem, unit="W")]
 
 datas = pd.concat([s for s in (sih["dt_inter"] if not sih.empty else None,
                                srag["dt_notific"] if not srag.empty else None) if s is not None])
@@ -103,11 +121,11 @@ grupos_sel = st.sidebar.multiselect("Grupos de doença (SIH)", list(GRUPOS_CID),
                                     default=list(GRUPOS_CID))
 
 
-def filtrar(df, col_data, grupo=False):
+def filtrar(df, col_data, grupo=False, por_mun=True):
     if df.empty:
         return df
     m = df[col_data].between(ini, fim) & df["uf"].isin(uf_sel)
-    if mun_sel:
+    if mun_sel and por_mun:
         m &= df["municipio"].isin(mun_sel)
     if grupo:
         m &= df["grupo"].isin(grupos_sel)
@@ -116,8 +134,116 @@ def filtrar(df, col_data, grupo=False):
 
 sih_f, srag_f = filtrar(sih, "dt_inter", True), filtrar(srag, "dt_notific")
 st.title("Infecções respiratórias, TB e virais — demanda hospitalar")
-t1, t2, t3, t4 = st.tabs(["Internações (SIH/SUS)", "SRAG (vigilância)",
-                          "Demanda de isolamento", "Leitos (CNES)"])
+t0, t1, t2, t3, t4 = st.tabs(["Mapa", "Internações (SIH)", "SRAG",
+                              "Demanda de isolamento", "Leitos (CNES)"])
+
+# ------------------------------------------------------------------- aba 0
+with t0:
+    if not ARQ_MALHA.exists():
+        st.info("Malha do mapa não encontrada. Rode `python collect_geo.py`.")
+    else:
+        geo = carregar_malha()
+        # o mapa mostra a UF inteira: ignora o filtro de municípios da barra lateral
+        sih_m = filtrar(sih, "dt_inter", True, por_mun=False)
+        srag_m = filtrar(srag, "dt_notific", por_mun=False)
+        lt_m = leitos[leitos["uf"].isin(uf_sel)] if not leitos.empty else leitos
+        tem_pop = not pop.empty
+        tem_dados = {"Internações": not sih_m.empty, "Casos": not srag_m.empty,
+                     "Leitos": not lt_m.empty}
+        opcoes = [i for i, (tipo, rot) in INDICADORES.items()
+                  if tem_dados[rot] and (tem_pop or tipo == "contagem")]
+        if not opcoes:
+            st.info("Sem dados para os filtros atuais.")
+        else:
+            c1, c2 = st.columns([3, 2])
+            ind = c1.selectbox("Indicador", opcoes, key="mapa_indicador")
+            nivel_rot = c2.selectbox("Nível", list(NIVEIS_MAPA), key="mapa_nivel")
+            nivel = NIVEIS_MAPA[nivel_rot]
+            tipo, rot_cont = INDICADORES[ind]
+
+            if "SRAG" in ind:
+                base, col_val = srag_m, None
+            elif tipo == "leitos":
+                base, col_val = lt_m, "qt_exist"
+            else:
+                base, col_val = sih_m, None
+            if col_val:
+                contagem = base.groupby("cod_mun")[col_val].sum().reset_index(name="valor")
+            else:
+                contagem = base.groupby("cod_mun").size().reset_index(name="valor")
+
+            pop_mapa = pop if tem_pop else pd.DataFrame({"cod_mun": [], "populacao": []})
+            gdf = agregar(contagem, geo, pop_mapa, nivel, malha_nivel(nivel)[0])
+            valido = gdf["populacao"] > 0
+            if tipo == "contagem":
+                gdf["indicador"] = gdf["valor"]
+            elif tipo == "taxa":
+                gdf["indicador"] = (gdf["valor"] / gdf["populacao"] * 1e5 / anos_periodo).where(valido)
+            elif tipo == "eb":
+                gdf["indicador"] = taxa_eb(gdf["valor"], gdf["populacao"], anos_periodo)
+            else:
+                gdf["indicador"] = (gdf["valor"] / gdf["populacao"] * 1e4).where(valido)
+            casas = 0 if tipo == "contagem" else 1
+            tab = pd.DataFrame({
+                "chave": gdf["chave"], "nome": gdf["nome"], "indicador": gdf["indicador"],
+                "txt_ind": gdf["indicador"].map(
+                    lambda x: "sem população" if pd.isna(x) else estilo.fmt_dec(x, casas)),
+                "txt_val": gdf["valor"].map(estilo.fmt_int),
+                "txt_pop": gdf["populacao"].map(
+                    lambda x: "ausente" if pd.isna(x) else estilo.fmt_int(x))})
+
+            esq, dir_ = st.columns([3, 1])
+            fig = px.choropleth(tab, geojson=malha_nivel(nivel)[1], locations="chave",
+                                featureidkey="properties.chave", color="indicador",
+                                color_continuous_scale=estilo.SEQUENCIAL,
+                                custom_data=["nome", "txt_ind", "txt_val", "txt_pop"])
+            fig.update_geos(fitbounds="locations", visible=False)
+            fig.update_traces(marker_line_color="#ffffff", marker_line_width=0.5,
+                              hovertemplate=("<b>%{customdata[0]}</b><br>" + ind
+                                             + ": %{customdata[1]}<br>" + rot_cont
+                                             + ": %{customdata[2]}<br>População: %{customdata[3]}"
+                                             "<extra></extra>"))
+            fig.update_layout(height=620, margin=dict(l=0, r=0, t=10, b=0),
+                              coloraxis_colorbar=dict(title=dict(
+                                  text="<br>".join(textwrap.wrap(ind, 26)), side="right")))
+            esq.plotly_chart(fig, width="stretch", config=estilo.config_plotly("figura1_mapa"))
+
+            dir_.markdown(f"**Dez maiores ({nivel_rot.lower()})**")
+            top = tab.dropna(subset=["indicador"]).nlargest(10, "indicador")
+            dir_.dataframe(top[["nome", "txt_ind", "txt_pop"]].rename(
+                columns={"nome": "Unidade", "txt_ind": "Valor", "txt_pop": "População"}),
+                hide_index=True, width="stretch")
+            completo = pd.DataFrame({"chave": gdf["chave"], "nome": gdf["nome"],
+                                     "contagem": gdf["valor"], "populacao": gdf["populacao"],
+                                     "indicador": gdf["indicador"]})
+            dir_.download_button("Baixar todas as unidades (CSV)", csv_bytes(completo),
+                                 f"mapa_{nivel}.csv")
+
+            ano_pop = int(pop["ano_pop"].max()) if tem_pop and "ano_pop" in pop else "?"
+            if "SRAG" in ind:
+                origem = "SIVEP-Gripe (OpenDataSUS)"
+            elif tipo == "leitos":
+                comp = lt_m["competencia"].dropna().astype(str).max() if "competencia" in lt_m else "?"
+                origem = f"CNES (DATASUS), competência {comp}"
+            else:
+                origem = "SIH/SUS (DATASUS)"
+            if tipo not in ("contagem",):
+                origem += f"; IBGE, estimativas populacionais {ano_pop}"
+            origem += "; malha municipal e regiões de saúde 2023 (IPEA/geobr)"
+            if fonte == "demo":
+                origem = "DADOS FICTÍCIOS (modo demo); " + origem
+            periodo_txt = ("sem recorte temporal (competência mais recente)" if tipo == "leitos"
+                           else f"período de {ini:%d/%m/%Y} a {fim:%d/%m/%Y}")
+            fora = fora_do_mapa(contagem, geo)
+            nota = (f"Unidade de análise: {nivel_rot.lower()}; {periodo_txt}. O mapa mostra a UF inteira "
+                    f"e ignora o filtro de municípios. {estilo.fmt_int(fora)} {rot_cont.lower()} "
+                    "ficaram fora do mapa (código de município fora da malha: outras UFs ou inválido)")
+            if tipo == "eb":
+                nota += ". Taxa suavizada por estimador bayesiano empírico global (Marshall, 1991)"
+            sem_pop = int((~valido).sum())
+            if tipo != "contagem" and sem_pop:
+                nota += f". {sem_pop} unidade(s) sem população ficam em branco"
+            st.markdown(estilo.legenda("mapa", origem, nota))
 
 # ------------------------------------------------------------------- aba 1
 with t1:
@@ -171,20 +297,6 @@ with t1:
                               title=f"Top municípios ({base}) — {ttl}")
                        .update_yaxes(autorange="reversed"), width="stretch")
         st.download_button("Baixar tabela por município (CSV)", csv_bytes(por_mun), "sih_por_municipio.csv")
-
-        with st.expander("Mapa por município (baixa a malha do IPEA via geobr)"):
-            if st.checkbox("Gerar mapa"):
-                try:
-                    import geobr
-                    gdf = geobr.read_municipality(code_muni=uf_sel[0], year=2020)
-                    gdf["cod_mun"] = gdf["code_muni"].astype(str).str[:6]
-                    gdf = gdf.merge(por_mun, on="cod_mun", how="left")
-                    gdf["internacoes"] = gdf["internacoes"].fillna(0)
-                    usar = "taxa" if (metrica != "Internações" and "taxa" in gdf) else "internacoes"
-                    st.plotly_chart(figura_mapa(gdf, usar, ttl if usar == "taxa" else "Internações"),
-                                    width="stretch")
-                except Exception as e:
-                    st.info(f"Mapa indisponível: {e}")
 
 # ------------------------------------------------------------------- aba 2
 with t2:
