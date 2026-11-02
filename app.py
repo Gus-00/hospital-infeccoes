@@ -84,7 +84,7 @@ if not sih.empty and n_mes:
     corte = sih["dt_inter"].max().to_period("M").start_time - pd.DateOffset(months=n_mes - 1)
     sih = sih[sih["dt_inter"] < corte]
 if not srag.empty and n_sem:
-    srag = srag[srag["dt_notific"] <= srag["dt_notific"].max() - pd.Timedelta(weeks=n_sem)]
+    srag = srag[srag["dt_notific"] <= srag["dt_notific"].max() - pd.Timedelta(weeks=int(n_sem))]
 
 datas = pd.concat([s for s in (sih["dt_inter"] if not sih.empty else None,
                                srag["dt_notific"] if not srag.empty else None) if s is not None])
