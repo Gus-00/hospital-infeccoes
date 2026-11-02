@@ -3,6 +3,8 @@ Pega a competência (mês) mais recente publicada para cada UF de config.UF_ALVO
 Uso: python collect_cnes.py
 """
 import ftplib
+import re
+from pathlib import Path
 
 import pandas as pd
 
@@ -35,6 +37,19 @@ def conectar():
     raise SystemExit("Estrutura do FTP do CNES diferente do esperado.")
 
 
+def nome_lt_valido(nome: str, uf: str) -> bool:
+    """Aceita só LT{uf}AAMM.DBC (sem diferenciar maiúsculas/minúsculas)."""
+    return re.fullmatch(rf"LT{re.escape(uf)}\d{{4}}\.DBC", nome, re.IGNORECASE) is not None
+
+
+def destino_seguro(nome: str) -> Path:
+    """Caminho local do arquivo; recusa nomes que saiam da pasta DESTINO."""
+    destino = DESTINO / nome
+    if destino.resolve().parent != DESTINO.resolve():
+        raise SystemExit(f"Nome de arquivo suspeito do FTP do CNES: {nome!r}")
+    return destino
+
+
 def processar(df: pd.DataFrame, uf: str) -> pd.DataFrame:
     num = lambda c: pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
     return pd.DataFrame({
@@ -54,14 +69,13 @@ def main():
     nomes = ftp.nlst()
     partes = []
     for uf in (UF_ALVO or UFS_BR):
-        cand = sorted(n for n in nomes
-                      if n.upper().startswith(f"LT{uf}") and n.upper().endswith(".DBC"))
+        cand = sorted(n for n in nomes if nome_lt_valido(n, uf))
         if not cand:
             print(f"CNES {uf}: nenhum arquivo LT encontrado")
             continue
         nome = cand[-1]  # AAMM mais recente (ordenação lexicográfica = cronológica)
         DESTINO.mkdir(parents=True, exist_ok=True)
-        destino = DESTINO / nome
+        destino = destino_seguro(nome)
         if not destino.exists():
             with open(destino, "wb") as f:
                 ftp.retrbinary(f"RETR {nome}", f.write)
