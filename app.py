@@ -83,9 +83,14 @@ def fmt_periodo(cob) -> str:
     return f"{cob[0]:%d/%m/%Y} a {cob[1]:%d/%m/%Y}"
 
 
+def dec_ou_nd(x) -> str:
+    return "sem dado" if pd.isna(x) else estilo.fmt_dec(x)
+
+
 def mostrar(alvo, fig, nome: str, id_fig: str, fonte_fig: str, nota: str | None = None) -> None:
     """Figura com a config de exportação e a legenda numerada logo abaixo.
     theme=None: o tema "streamlit" sobrescreveria o template "artigo" no navegador."""
+    fig.update_layout(plot_bgcolor=estilo.FUNDO, paper_bgcolor=estilo.FUNDO)
     alvo.plotly_chart(fig, width="stretch", theme=None, config=estilo.config_plotly(nome))
     alvo.markdown(estilo.legenda(id_fig, fonte_rotulada(fonte_fig), nota))
 
@@ -94,6 +99,7 @@ ARQ_MALHA = REAL / "geo_municipios.parquet"  # malha vale para real e demo (não
 NIVEIS_MAPA = {"Município": "municipio", "Região de saúde": "regiao",
                "Macrorregião de saúde": "macro"}
 # indicador -> (tipo, rótulo da contagem, fonte); tipos: contagem, taxa, eb, leitos
+IND_PADRAO = "Taxa de internação SIH suavizada (bayesiano empírico)"
 INDICADORES = {
     "Internações SIH (residência)": ("contagem", "Internações", "sih"),
     "Taxa de internação SIH por 100 mil hab./ano": ("taxa", "Internações", "sih"),
@@ -243,7 +249,9 @@ with t0:
             st.info("Sem dados para os filtros atuais.")
         else:
             c1, c2 = st.columns([3, 2])
-            ind = c1.selectbox("Indicador", opcoes, key="mapa_indicador")
+            # padrão: taxa suavizada (a contagem absoluta é dominada por Fortaleza)
+            padrao = opcoes.index(IND_PADRAO) if IND_PADRAO in opcoes else 0
+            ind = c1.selectbox("Indicador", opcoes, index=padrao, key="mapa_indicador")
             nivel_rot = c2.selectbox("Nível", list(NIVEIS_MAPA), key="mapa_nivel")
             nivel = NIVEIS_MAPA[nivel_rot]
             tipo, rot_cont, origem_dados = INDICADORES[ind]
@@ -279,7 +287,7 @@ with t0:
                 "txt_pop": gdf["populacao"].map(
                     lambda x: "ausente" if pd.isna(x) else estilo.fmt_int(x))})
 
-            esq, dir_ = st.columns([3, 1])
+            esq, dir_ = st.columns([5, 3])
             geojson = malha_nivel(nivel)[1]
             fig = go.Figure()
             com, sem = tab[tab["indicador"].notna()], tab[tab["indicador"].isna()]
@@ -293,7 +301,7 @@ with t0:
                     colorscale=[[i / (len(estilo.SEQUENCIAL) - 1), c]
                                 for i, c in enumerate(estilo.SEQUENCIAL)],
                     marker_line_color="#ffffff", marker_line_width=0.5,
-                    colorbar=dict(title=dict(text="<br>".join(textwrap.wrap(ind, 26)), side="right"),
+                    colorbar=dict(len=0.85, thickness=14, xpad=4, title=dict(text="<br>".join(textwrap.wrap(ind, 26)), side="right"),
                                   tickformat=",~f")))  # "5.000", não "5k"
             if not sem.empty:  # sem dado fica cinza neutro, nunca invisível
                 fig.add_trace(go.Choropleth(
@@ -301,7 +309,11 @@ with t0:
                     z=[0] * len(sem), customdata=sem[cols_hover].to_numpy(), hovertemplate=hover,
                     colorscale=[[0, "#f0efec"], [1, "#f0efec"]], showscale=False,
                     marker_line_color="#ffffff", marker_line_width=0.5))
-            fig.update_geos(fitbounds="locations", visible=False)
+            # enquadra a malha inteira da UF com margem pequena (fitbounds deixava 2/3 vazio)
+            x0, y0, x1, y1 = geo.total_bounds
+            mx, my = 0.03 * (x1 - x0), 0.03 * (y1 - y0)
+            fig.update_geos(projection_type="mercator", visible=False,
+                            lonaxis_range=[x0 - mx, x1 + mx], lataxis_range=[y0 - my, y1 + my])
             fig.update_layout(height=620, margin=dict(l=0, r=0, t=10, b=0))
             esq.plotly_chart(fig, width="stretch", theme=None,
                              config=estilo.config_plotly("figura1_mapa"))
@@ -309,7 +321,7 @@ with t0:
             dir_.markdown(f"**Dez maiores ({nivel_rot.lower()})**")
             top = tab.dropna(subset=["indicador"]).nlargest(10, "indicador")
             dir_.dataframe(top[["nome", "txt_ind", "txt_pop"]].rename(
-                columns={"nome": "Unidade", "txt_ind": "Valor", "txt_pop": "População"}),
+                columns={"nome": "Unidade", "txt_ind": "Valor", "txt_pop": "Pop."}),
                 hide_index=True, width="stretch")
             completo = pd.DataFrame({"chave": gdf["chave"], "nome": gdf["nome"],
                                      "contagem": gdf["valor"], "populacao": gdf["populacao"],
@@ -493,9 +505,14 @@ with t2:
         resumo["pct_obito"] = (100 * resumo["pct_obito"]).round(1)
         resumo["idade_mediana"] = resumo["idade_mediana"].round(1)
         a.subheader("Gravidade por agente")
-        a.dataframe(resumo.rename(columns={
-            "agente": "Agente", "casos": "Casos", "pct_uti": "UTI (%)", "pct_obito": "Óbito (%)",
-            "idade_mediana": "Idade mediana (anos)"}), hide_index=True, width="stretch")
+        # strings pt-BR só para exibir; o CSV baixado mantém os números
+        exibe = pd.DataFrame({
+            "Agente": resumo["agente"], "Casos": resumo["casos"].map(estilo.fmt_int),
+            "UTI (%)": resumo["pct_uti"].map(dec_ou_nd),
+            "Óbito (%)": resumo["pct_obito"].map(dec_ou_nd),
+            "Idade med.": resumo["idade_mediana"].map(dec_ou_nd)})
+        a.dataframe(exibe, hide_index=True, width="stretch")
+        a.caption("Idade med. = idade mediana, em anos.")
         a.download_button("Baixar resumo (CSV)", csv_bytes(resumo), "srag_resumo.csv")
         faixas = faixa_etaria(srag_f["idade"])
         fx = (srag_f.assign(faixa=faixas).groupby(["faixa", "agente"], observed=True)

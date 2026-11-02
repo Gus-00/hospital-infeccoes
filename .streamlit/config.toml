@@ -4,9 +4,12 @@ primaryColor = "#1c5cab"
 backgroundColor = "#ffffff"
 secondaryBackgroundColor = "#f4f5f7"
 textColor = "#1d2a33"
-# Formato "Nome:URL" do Streamlit 1.65; fallback depois da vírgula
-font = "IBM Plex Sans:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap, Segoe UI, sans-serif"
-headingFont = "Source Serif 4:https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@500;600&display=swap, Georgia, serif"
+# Formato "Nome:URL". Sem fallback depois da URL: o Streamlit trata tudo após o
+# primeiro ":" como URL e, com ", Georgia, serif" no fim, descarta a fonte inteira.
+# O nome com algarismo precisa de aspas simples ("'Source Serif 4'"): sem elas o CSS
+# font-family fica inválido e o título cai na fonte do corpo.
+font = "IBM Plex Sans:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+headingFont = "'Source Serif 4':https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@500;600&display=swap"
 # h1, h2, h3: o título do painel é longo e deve caber em uma linha
 headingFontSizes = ["1.75rem", "1.375rem", "1.125rem"]
 
