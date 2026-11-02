@@ -7,11 +7,13 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 import estilo
 from config import ANOS, DEMO, GRUPOS_CID, ISOLAMENTO_PADRAO, LEITOS_ISOLAMENTO_CODLEITO, REAL
-from mapa import agregar, dissolver, fora_do_mapa, taxa_eb
+from mapa import (agregar, dissolver, fora_do_mapa, leitos_por_10mil, municipios_sem_pop,
+                  periodo_efetivo, taxa_bruta, taxa_eb)
 
 st.set_page_config(page_title="Infecções e demanda de isolamento", layout="wide")
 MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
@@ -54,14 +56,14 @@ def csv_bytes(df: pd.DataFrame) -> bytes:
 ARQ_MALHA = REAL / "geo_municipios.parquet"  # malha vale para real e demo (não é fictícia)
 NIVEIS_MAPA = {"Município": "municipio", "Região de saúde": "regiao",
                "Macrorregião de saúde": "macro"}
-# indicador -> (tipo, rótulo da contagem); tipos: contagem, taxa, eb, leitos
+# indicador -> (tipo, rótulo da contagem, fonte); tipos: contagem, taxa, eb, leitos
 INDICADORES = {
-    "Internações SIH (residência)": ("contagem", "Internações"),
-    "Taxa de internação SIH por 100 mil hab./ano": ("taxa", "Internações"),
-    "Taxa de internação SIH suavizada (bayesiano empírico)": ("eb", "Internações"),
-    "Casos de SRAG (município de notificação)": ("contagem", "Casos"),
-    "Taxa de SRAG por 100 mil hab./ano (município de notificação)": ("taxa", "Casos"),
-    "Leitos existentes por 10 mil hab. (CNES)": ("leitos", "Leitos"),
+    "Internações SIH (residência)": ("contagem", "Internações", "sih"),
+    "Taxa de internação SIH por 100 mil hab./ano": ("taxa", "Internações", "sih"),
+    "Taxa de internação SIH suavizada (bayesiano empírico)": ("eb", "Internações", "sih"),
+    "Casos de SRAG (município de notificação)": ("contagem", "Casos", "srag"),
+    "Taxa de SRAG por 100 mil hab./ano (município de notificação)": ("taxa", "Casos", "srag"),
+    "Leitos existentes por 10 mil hab. (CNES)": ("leitos", "Leitos", "leitos"),
 }
 
 
@@ -111,7 +113,11 @@ periodo = st.sidebar.date_input("Período", (d0, d1), min_value=d0, max_value=d1
 if len(periodo) != 2:
     st.stop()
 ini, fim = pd.Timestamp(periodo[0]), pd.Timestamp(periodo[1])
-anos_periodo = max((fim - ini).days / 365.25, 1 / 365.25)
+# Pessoas-ano de cada fonte: só o trecho do período que a fonte realmente cobre
+# (SIH e SRAG terminam em datas diferentes depois de ocultar meses/semanas recentes)
+vazia = pd.Series(dtype="datetime64[ns]")
+cobertura = {"sih": periodo_efetivo(sih["dt_inter"] if not sih.empty else vazia, ini, fim),
+             "srag": periodo_efetivo(srag["dt_notific"] if not srag.empty else vazia, ini, fim)}
 
 ufs = sorted(set(sih.get("uf", [])) | set(srag.get("uf", [])))
 uf_sel = st.sidebar.multiselect("UF", ufs, default=ufs)
@@ -150,7 +156,7 @@ with t0:
         tem_pop = not pop.empty
         tem_dados = {"Internações": not sih_m.empty, "Casos": not srag_m.empty,
                      "Leitos": not lt_m.empty}
-        opcoes = [i for i, (tipo, rot) in INDICADORES.items()
+        opcoes = [i for i, (tipo, rot, _) in INDICADORES.items()
                   if tem_dados[rot] and (tem_pop or tipo == "contagem")]
         if not opcoes:
             st.info("Sem dados para os filtros atuais.")
@@ -159,14 +165,15 @@ with t0:
             ind = c1.selectbox("Indicador", opcoes, key="mapa_indicador")
             nivel_rot = c2.selectbox("Nível", list(NIVEIS_MAPA), key="mapa_nivel")
             nivel = NIVEIS_MAPA[nivel_rot]
-            tipo, rot_cont = INDICADORES[ind]
+            tipo, rot_cont, origem_dados = INDICADORES[ind]
 
-            if "SRAG" in ind:
+            if origem_dados == "srag":
                 base, col_val = srag_m, None
-            elif tipo == "leitos":
+            elif origem_dados == "leitos":
                 base, col_val = lt_m, "qt_exist"
             else:
                 base, col_val = sih_m, None
+            p_ini, p_fim, anos_fonte = cobertura.get(origem_dados, (ini, fim, None))
             if col_val:
                 contagem = base.groupby("cod_mun")[col_val].sum().reset_index(name="valor")
             else:
@@ -174,38 +181,46 @@ with t0:
 
             pop_mapa = pop if tem_pop else pd.DataFrame({"cod_mun": [], "populacao": []})
             gdf = agregar(contagem, geo, pop_mapa, nivel, malha_nivel(nivel)[0])
-            valido = gdf["populacao"] > 0
             if tipo == "contagem":
                 gdf["indicador"] = gdf["valor"]
             elif tipo == "taxa":
-                gdf["indicador"] = (gdf["valor"] / gdf["populacao"] * 1e5 / anos_periodo).where(valido)
+                gdf["indicador"] = taxa_bruta(gdf["valor"], gdf["populacao"], anos_fonte)
             elif tipo == "eb":
-                gdf["indicador"] = taxa_eb(gdf["valor"], gdf["populacao"], anos_periodo)
+                gdf["indicador"] = taxa_eb(gdf["valor"], gdf["populacao"], anos_fonte)
             else:
-                gdf["indicador"] = (gdf["valor"] / gdf["populacao"] * 1e4).where(valido)
+                gdf["indicador"] = leitos_por_10mil(gdf["valor"], gdf["populacao"])
             casas = 0 if tipo == "contagem" else 1
             tab = pd.DataFrame({
                 "chave": gdf["chave"], "nome": gdf["nome"], "indicador": gdf["indicador"],
                 "txt_ind": gdf["indicador"].map(
-                    lambda x: "sem população" if pd.isna(x) else estilo.fmt_dec(x, casas)),
+                    lambda x: "sem dado" if pd.isna(x) else estilo.fmt_dec(x, casas)),
                 "txt_val": gdf["valor"].map(estilo.fmt_int),
                 "txt_pop": gdf["populacao"].map(
                     lambda x: "ausente" if pd.isna(x) else estilo.fmt_int(x))})
 
             esq, dir_ = st.columns([3, 1])
-            fig = px.choropleth(tab, geojson=malha_nivel(nivel)[1], locations="chave",
-                                featureidkey="properties.chave", color="indicador",
-                                color_continuous_scale=estilo.SEQUENCIAL,
-                                custom_data=["nome", "txt_ind", "txt_val", "txt_pop"])
+            geojson = malha_nivel(nivel)[1]
+            fig = go.Figure()
+            com, sem = tab[tab["indicador"].notna()], tab[tab["indicador"].isna()]
+            hover = ("<b>%{customdata[0]}</b><br>" + ind + ": %{customdata[1]}<br>" + rot_cont
+                     + ": %{customdata[2]}<br>População: %{customdata[3]}<extra></extra>")
+            cols_hover = ["nome", "txt_ind", "txt_val", "txt_pop"]
+            if not com.empty:
+                fig.add_trace(go.Choropleth(
+                    geojson=geojson, featureidkey="properties.chave", locations=com["chave"],
+                    z=com["indicador"], customdata=com[cols_hover].to_numpy(), hovertemplate=hover,
+                    colorscale=[[i / (len(estilo.SEQUENCIAL) - 1), c]
+                                for i, c in enumerate(estilo.SEQUENCIAL)],
+                    marker_line_color="#ffffff", marker_line_width=0.5,
+                    colorbar=dict(title=dict(text="<br>".join(textwrap.wrap(ind, 26)), side="right"))))
+            if not sem.empty:  # sem dado fica cinza neutro, nunca invisível
+                fig.add_trace(go.Choropleth(
+                    geojson=geojson, featureidkey="properties.chave", locations=sem["chave"],
+                    z=[0] * len(sem), customdata=sem[cols_hover].to_numpy(), hovertemplate=hover,
+                    colorscale=[[0, "#f0efec"], [1, "#f0efec"]], showscale=False,
+                    marker_line_color="#ffffff", marker_line_width=0.5))
             fig.update_geos(fitbounds="locations", visible=False)
-            fig.update_traces(marker_line_color="#ffffff", marker_line_width=0.5,
-                              hovertemplate=("<b>%{customdata[0]}</b><br>" + ind
-                                             + ": %{customdata[1]}<br>" + rot_cont
-                                             + ": %{customdata[2]}<br>População: %{customdata[3]}"
-                                             "<extra></extra>"))
-            fig.update_layout(height=620, margin=dict(l=0, r=0, t=10, b=0),
-                              coloraxis_colorbar=dict(title=dict(
-                                  text="<br>".join(textwrap.wrap(ind, 26)), side="right")))
+            fig.update_layout(height=620, margin=dict(l=0, r=0, t=10, b=0))
             esq.plotly_chart(fig, width="stretch", config=estilo.config_plotly("figura1_mapa"))
 
             dir_.markdown(f"**Dez maiores ({nivel_rot.lower()})**")
@@ -220,9 +235,9 @@ with t0:
                                  f"mapa_{nivel}.csv")
 
             ano_pop = int(pop["ano_pop"].max()) if tem_pop and "ano_pop" in pop else "?"
-            if "SRAG" in ind:
+            if origem_dados == "srag":
                 origem = "SIVEP-Gripe (OpenDataSUS)"
-            elif tipo == "leitos":
+            elif origem_dados == "leitos":
                 comp = lt_m["competencia"].dropna().astype(str).max() if "competencia" in lt_m else "?"
                 origem = f"CNES (DATASUS), competência {comp}"
             else:
@@ -233,16 +248,22 @@ with t0:
             if fonte == "demo":
                 origem = "DADOS FICTÍCIOS (modo demo); " + origem
             periodo_txt = ("sem recorte temporal (competência mais recente)" if tipo == "leitos"
-                           else f"período de {ini:%d/%m/%Y} a {fim:%d/%m/%Y}")
+                           else f"período de {p_ini:%d/%m/%Y} a {p_fim:%d/%m/%Y}")
             fora = fora_do_mapa(contagem, geo)
             nota = (f"Unidade de análise: {nivel_rot.lower()}; {periodo_txt}. O mapa mostra a UF inteira "
                     f"e ignora o filtro de municípios. {estilo.fmt_int(fora)} {rot_cont.lower()} "
                     "ficaram fora do mapa (código de município fora da malha: outras UFs ou inválido)")
             if tipo == "eb":
                 nota += ". Taxa suavizada por estimador bayesiano empírico global (Marshall, 1991)"
-            sem_pop = int((~valido).sum())
-            if tipo != "contagem" and sem_pop:
-                nota += f". {sem_pop} unidade(s) sem população ficam em branco"
+            if tipo in ("taxa", "eb"):
+                nota += (f"; pessoas-ano sobre o período coberto pela fonte "
+                         f"({estilo.fmt_dec(anos_fonte, 2)} anos)")
+            if tipo != "contagem":
+                n_sem_mun = municipios_sem_pop(geo, pop_mapa)
+                n_sem_un = int(gdf["indicador"].isna().sum())
+                if n_sem_un:
+                    nota += (f". {n_sem_mun} município(s) sem população; {n_sem_un} unidade(s) "
+                             "afetada(s) ficam sem taxa (cinza)")
             st.markdown(estilo.legenda("mapa", origem, nota))
 
 # ------------------------------------------------------------------- aba 1
@@ -285,7 +306,7 @@ with t1:
         metrica = b.radio("Ranking de municípios por", opcoes, horizontal=True)
         if tem_pop:
             por_mun = por_mun.merge(pop[["cod_mun", "populacao"]], on="cod_mun", how="left")
-            por_mun["taxa"] = por_mun["internacoes"] / por_mun["populacao"] * 1e5 / anos_periodo
+            por_mun["taxa"] = taxa_bruta(por_mun["internacoes"], por_mun["populacao"], cobertura["sih"][2])
         if metrica == "Internações":
             top, col, ttl = por_mun.nlargest(15, "internacoes"), "internacoes", "Internações"
         else:

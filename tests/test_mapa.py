@@ -3,7 +3,8 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import box
 
-from mapa import agregar, fora_do_mapa, taxa_eb
+from mapa import (agregar, fora_do_mapa, leitos_por_10mil, municipios_sem_pop,
+                  periodo_efetivo, taxa_bruta, taxa_eb)
 
 
 def test_eb_taxas_iguais_devolve_taxa_comum():
@@ -101,3 +102,67 @@ def test_fora_do_mapa_conta_codigos_de_outra_uf():
     contagem = pd.DataFrame({"cod_mun": ["230001", "350001", "999999"],
                              "valor": [3, 50, 7]})
     assert fora_do_mapa(contagem, geo_sintetico()) == 57
+
+
+# ---- correções da revisão: período efetivo, população parcial, taxas puras
+
+
+def test_periodo_efetivo_fonte_termina_antes_do_fim():
+    datas = pd.Series(pd.to_datetime(["2023-01-05", "2023-01-31"]))
+    ini, fim = pd.Timestamp("2023-01-01"), pd.Timestamp("2023-12-31")
+    i, f, anos = periodo_efetivo(datas, ini, fim)
+    assert i == pd.Timestamp("2023-01-05") and f == pd.Timestamp("2023-01-31")
+    assert anos == 27 / 365.25  # 5 a 31 de janeiro, dia final incluído
+
+
+def test_periodo_efetivo_fonte_comeca_depois_do_inicio():
+    datas = pd.Series(pd.to_datetime(["2023-03-01 10:00", "2023-12-31 00:00"]))
+    i, f, anos = periodo_efetivo(datas, pd.Timestamp("2023-01-01"), pd.Timestamp("2023-12-31"))
+    assert i == pd.Timestamp("2023-03-01") and f == pd.Timestamp("2023-12-31")
+    assert anos == 306 / 365.25
+
+
+def test_periodo_efetivo_limitado_pelo_filtro_e_dia_unico():
+    datas = pd.Series(pd.to_datetime(["2020-01-01", "2030-01-01"]))
+    i, f, anos = periodo_efetivo(datas, pd.Timestamp("2023-01-01"), pd.Timestamp("2023-01-01"))
+    assert (i, f) == (pd.Timestamp("2023-01-01"), pd.Timestamp("2023-01-01"))
+    assert anos == 1 / 365.25  # inclusivo: um dia
+
+
+def test_periodo_efetivo_sem_dados_usa_o_filtro():
+    i, f, anos = periodo_efetivo(pd.Series([], dtype="datetime64[ns]"),
+                                 pd.Timestamp("2023-01-01"), pd.Timestamp("2023-01-10"))
+    assert (i, f) == (pd.Timestamp("2023-01-01"), pd.Timestamp("2023-01-10"))
+    assert anos == 10 / 365.25
+
+
+def test_taxa_bruta_e_pop_invalida():
+    out = taxa_bruta([10, 5, 3], [1000, 0, np.nan], anos=2)
+    assert out[0] == 500.0 and np.isnan(out[1]) and np.isnan(out[2])
+
+
+def test_leitos_por_10mil():
+    out = leitos_por_10mil([30, 4], [10_000, 0])
+    assert out[0] == 30.0 and np.isnan(out[1])
+
+
+def test_regiao_com_membro_sem_populacao_vira_nan():
+    pop = POP[POP["cod_mun"] != "230002"]  # Beta (região A) sem população
+    contagem = pd.DataFrame({"cod_mun": ["230001", "230002"], "valor": [3, 4]})
+    out = agregar(contagem, geo_sintetico(), pop, "regiao")
+    assert np.isnan(out.loc[out["chave"] == "23001", "populacao"].iloc[0])
+    assert out.loc[out["chave"] == "23001", "valor"].iloc[0] == 7
+    assert out.loc[out["chave"] == "23002", "populacao"].iloc[0] == 400  # completa
+    macro = agregar(contagem, geo_sintetico(), pop, "macro")
+    assert np.isnan(macro["populacao"].iloc[0])
+
+
+def test_regiao_com_todos_os_membros_soma_populacao():
+    out = agregar(pd.DataFrame({"cod_mun": [], "valor": []}), geo_sintetico(), POP, "regiao")
+    assert out.loc[out["chave"] == "23001", "populacao"].iloc[0] == 300
+
+
+def test_municipios_sem_pop_conta_na_malha():
+    pop = POP[POP["cod_mun"] != "230002"]
+    assert municipios_sem_pop(geo_sintetico(), pop) == 1
+    assert municipios_sem_pop(geo_sintetico(), POP) == 0

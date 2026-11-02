@@ -49,9 +49,10 @@ def agregar(contagem: pd.DataFrame, geo: gpd.GeoDataFrame, pop: pd.DataFrame, ni
             .merge(val, on="cod_mun", how="left")
             .merge(pop[["cod_mun", "populacao"]], on="cod_mun", how="left"))
     base["valor"] = base["valor"].fillna(0)
-    # min_count=1: unidade sem nenhuma população conhecida fica NaN, não 0
+    # população parcial inflaria a taxa: basta um município sem população para a unidade ficar NaN
     soma = (base.groupby([cod, nome], as_index=False)
-            .agg(valor=("valor", "sum"), populacao=("populacao", lambda s: s.sum(min_count=1)))
+            .agg(valor=("valor", "sum"),
+                 populacao=("populacao", lambda s: s.sum() if s.notna().all() else np.nan))
             .rename(columns={cod: "chave", nome: "nome"}))
     geom = geometrias if geometrias is not None else dissolver(geo, nivel)
     out = geom[["chave", "geometry"]].merge(soma, on="chave", how="left")
@@ -62,3 +63,31 @@ def agregar(contagem: pd.DataFrame, geo: gpd.GeoDataFrame, pop: pd.DataFrame, ni
 def fora_do_mapa(contagem: pd.DataFrame, geo: gpd.GeoDataFrame) -> int:
     """Soma de valor cujo cod_mun não está na malha (outras UFs ou códigos inválidos)."""
     return int(contagem.loc[~contagem["cod_mun"].isin(geo["cod_mun"]), "valor"].sum())
+
+
+def municipios_sem_pop(geo: gpd.GeoDataFrame, pop: pd.DataFrame) -> int:
+    """Municípios da malha sem população conhecida (deixam a unidade sem taxa)."""
+    com_pop = pop.loc[pop["populacao"].notna(), "cod_mun"]
+    return int((~geo["cod_mun"].isin(com_pop)).sum())
+
+
+def periodo_efetivo(datas: pd.Series, ini, fim):
+    """Período realmente coberto pela fonte dentro do filtro: (início, fim, anos-pessoa).
+    O dia final conta (inclusivo); sem dados, vale o próprio filtro."""
+    inicio, termino = pd.Timestamp(ini).normalize(), pd.Timestamp(fim).normalize()
+    if len(datas):
+        inicio = max(inicio, pd.Timestamp(datas.min()).normalize())
+        termino = min(termino, pd.Timestamp(datas.max()).normalize())
+    return inicio, termino, max((termino - inicio).days + 1, 1) / 365.25
+
+
+def taxa_bruta(casos, pop, anos, base: float = 1e5) -> np.ndarray:
+    """Casos por `base` habitantes por ano; NaN onde a população é nula ou ausente."""
+    casos = np.asarray(casos, dtype=float)
+    pop = np.asarray(pop, dtype=float)
+    ok = np.isfinite(pop) & (pop > 0)
+    return np.where(ok, casos / np.where(ok, pop, 1) / anos * base, np.nan)
+
+
+def leitos_por_10mil(leitos, pop) -> np.ndarray:
+    return taxa_bruta(leitos, pop, 1, 1e4)
