@@ -14,7 +14,7 @@ import estilo
 import metodos
 from config import ANOS, DEMO, GRUPOS_CID, ISOLAMENTO_PADRAO, LEITOS_ISOLAMENTO_CODLEITO, REAL
 from mapa import (agregar, dissolver, fora_do_mapa, leitos_por_10mil, municipios_sem_pop,
-                  periodo_efetivo, taxa_bruta, taxa_eb)
+                  periodo_efetivo, resumo_gravidade, taxa_bruta, taxa_eb, taxa_so_na_uf)
 
 st.set_page_config(page_title="Infecções e demanda de isolamento", layout="wide")
 MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
@@ -46,7 +46,7 @@ def carregar(base: str):
         n_antes = n0 - len(sih)  # contado para a aba Métodos
     if not srag.empty:
         srag["dt_notific"] = pd.to_datetime(srag["dt_notific"])
-    return sih, srag, pop, leitos, n_antes
+    return sih, srag, pop, leitos, n_antes, mun
 
 
 def semana(s: pd.Series) -> pd.Series:
@@ -91,7 +91,8 @@ def mostrar(alvo, fig, nome: str, id_fig: str, fonte_fig: str, nota: str | None 
     """Figura com a config de exportação e a legenda numerada logo abaixo.
     theme=None: o tema "streamlit" sobrescreveria o template "artigo" no navegador."""
     fig.update_layout(plot_bgcolor=estilo.FUNDO, paper_bgcolor=estilo.FUNDO)
-    alvo.plotly_chart(fig, width="stretch", theme=None, config=estilo.config_plotly(nome))
+    alvo.plotly_chart(fig, width="stretch", theme=None,
+                      config=estilo.config_plotly(nome, fig.layout.height))
     alvo.markdown(estilo.legenda(id_fig, fonte_rotulada(fonte_fig), nota))
 
 
@@ -128,7 +129,7 @@ tem_real = (REAL / "sih.parquet").exists() or (REAL / "srag.parquet").exists()
 fonte = st.sidebar.radio("Fonte dos dados", ["real", "demo"], index=0 if tem_real else 1,
                          format_func=lambda x: {"real": "Dados reais (coletados)",
                                                 "demo": "DEMO (dados fictícios)"}[x])
-sih, srag, pop, leitos, n_antes = carregar(str(REAL if fonte == "real" else DEMO))
+sih, srag, pop, leitos, n_antes, municipios_ibge = carregar(str(REAL if fonte == "real" else DEMO))
 FONTE_SIH = "SIH/SUS, AIH reduzida (DATASUS)"
 FONTE_SRAG = "SIVEP-Gripe, SRAG (OpenDataSUS)"
 
@@ -166,6 +167,10 @@ if not srag.empty and n_sem:
     nota_oculto_srag = (f"{'Última semana oculta' if n_sem == 1 else f'Últimas {n_sem} semanas ocultas'} "
                         f"por atraso de notificação (notificações depois de {limite:%d/%m/%Y}: "
                         f"{estilo.fmt_int(cortes['srag_oculto'])} na base carregada)")
+
+if sih.empty and srag.empty:  # os cortes acima podem esvaziar as duas bases
+    st.error("Sem dados depois de ocultar os meses/semanas recentes. Reduza os cortes na barra lateral.")
+    st.stop()
 
 datas = pd.concat([s for s in (sih["dt_inter"] if not sih.empty else None,
                                srag["dt_notific"] if not srag.empty else None) if s is not None])
@@ -335,7 +340,7 @@ with t0:
                 origem = f"CNES, leitos, competência {metodos.fmt_comp(comp_cnes)} (DATASUS)"
             else:
                 origem = FONTE_SIH
-            if tipo not in ("contagem",):
+            if tipo != "contagem":
                 origem += f"; IBGE, estimativas populacionais {ano_pop or '?'}"
             origem += "; malha municipal e regiões de saúde 2023 (IPEA/geobr)"
             if fonte == "demo":
@@ -346,6 +351,10 @@ with t0:
             nota = (f"Unidade de análise: {nivel_rot.lower()}; {periodo_txt}. O mapa mostra a UF inteira "
                     f"e ignora o filtro de municípios. {estilo.fmt_int(fora)} {rot_cont.lower()} "
                     "ficaram fora do mapa (código de município fora da malha: outras UFs ou inválido)")
+            if origem_dados == "srag" and tipo == "taxa":
+                nota += (". Atenção: notificações divididas pela população residente do município "
+                         "notificador; infla polos de referência (ex.: Fortaleza) e desinfla a área "
+                         "de abrangência; não é taxa de incidência")
             if tipo == "eb":
                 nota += ". Taxa suavizada por estimador bayesiano empírico global (Marshall, 1991)"
             if tipo in ("taxa", "eb"):
@@ -437,6 +446,11 @@ with t1:
         if tem_pop:
             por_mun = por_mun.merge(pop[["cod_mun", "populacao"]], on="cod_mun", how="left")
             por_mun["taxa"] = taxa_bruta(por_mun["internacoes"], por_mun["populacao"], cobertura["sih"][2])
+            # residentes de fora das UFs selecionadas: taxa sem sentido, fica NaN
+            cods_uf = (municipios_ibge.loc[municipios_ibge["uf"].isin(uf_sel), "cod_mun"]
+                       if not municipios_ibge.empty else por_mun["cod_mun"])
+            por_mun["taxa"] = taxa_so_na_uf(por_mun["taxa"], por_mun["cod_mun"], cods_uf)
+            n_fora_uf = int((~por_mun["cod_mun"].isin(cods_uf)).sum())
         nota_rank = (("Município de residência do paciente" if base == "residência"
                       else "Município do hospital") + "; "
                      "o filtro de municípios se aplica à residência. " + per_sih)
@@ -446,15 +460,18 @@ with t1:
         else:
             min_pop = b.slider("População mínima do município", 0, 100_000, 20_000, 5_000,
                                help="Taxas de municípios pequenos oscilam muito.")
-            elegiveis = por_mun[por_mun["populacao"] >= min_pop]
+            dentro = por_mun[por_mun["taxa"].notna() | por_mun["cod_mun"].isin(cods_uf)]
+            elegiveis = dentro[dentro["populacao"] >= min_pop]
             top = elegiveis.nlargest(15, "taxa")
             col, ttl, fmt = "taxa", "Taxa por 100 mil hab./ano", ",.1f"
             nota_rank += (f" ({estilo.fmt_dec(cobertura['sih'][2], 2)} anos de observação); "
                           f"população IBGE {ano_pop or '?'}. Só municípios com população a partir de "
                           f"{estilo.fmt_int(min_pop)} habitantes: "
-                          f"{estilo.fmt_int(len(por_mun) - len(elegiveis))} de "
-                          f"{estilo.fmt_int(len(por_mun))} ficaram de fora "
-                          f"({estilo.fmt_int(por_mun['populacao'].isna().sum())} sem população)")
+                          f"{estilo.fmt_int(len(dentro) - len(elegiveis))} de "
+                          f"{estilo.fmt_int(len(dentro))} municípios das UFs selecionadas ficaram de fora "
+                          f"({estilo.fmt_int(dentro['populacao'].isna().sum())} sem população). "
+                          f"Outros {estilo.fmt_int(n_fora_uf)} municípios de residência fora das UFs "
+                          "selecionadas ficam sem taxa (aparecem no CSV com taxa vazia)")
         fig = px.bar(top, x=col, y="municipio", orientation="h", labels={col: ttl, "municipio": ""})
         fig.update_traces(marker_color=estilo.CATEGORICA[0], texttemplate=f"%{{x:{fmt}}}",
                           textposition="outside", cliponaxis=False,
@@ -495,24 +512,22 @@ with t2:
                 f"{estilo.fmt_int(n_nao_esp)} casos ({estilo.fmt_dec(cortes['srag_pct_nao_esp'])}%), "
                 f"e \"Em investigação\" (sem classificação final), {estilo.fmt_int(n_invest)} casos "
                 f"({estilo.fmt_dec(cortes['srag_pct_investig'])}%); é uma característica dos dados "
-                f"do SIVEP-Gripe. {nota_oculto_srag}")
+                f"do SIVEP-Gripe. O corte de semanas ocultas é de 7 x N dias corridos a partir da última "
+                f"notificação, então a última semana exibida pode ser parcial. {nota_oculto_srag}")
         a, b = st.columns(2)
-        resumo = srag_f.groupby("agente").agg(casos=("agente", "size"), pct_uti=("uti", "mean"),
-                                              pct_obito=("obito", "mean"),
-                                              idade_mediana=("idade", "median"))
-        resumo = resumo.reindex(ordem_a).reset_index()
-        resumo["pct_uti"] = (100 * resumo["pct_uti"]).round(1)
-        resumo["pct_obito"] = (100 * resumo["pct_obito"]).round(1)
-        resumo["idade_mediana"] = resumo["idade_mediana"].round(1)
+        resumo = resumo_gravidade(srag_f, ordem_a)
         a.subheader("Gravidade por agente")
-        # strings pt-BR só para exibir; o CSV baixado mantém os números
+        # strings pt-BR só para exibir; o CSV baixado traz os números sem arredondar
         exibe = pd.DataFrame({
             "Agente": resumo["agente"], "Casos": resumo["casos"].map(estilo.fmt_int),
             "UTI (%)": resumo["pct_uti"].map(dec_ou_nd),
             "Óbito (%)": resumo["pct_obito"].map(dec_ou_nd),
             "Idade med.": resumo["idade_mediana"].map(dec_ou_nd)})
         a.dataframe(exibe, hide_index=True, width="stretch")
-        a.caption("Idade med. = idade mediana, em anos.")
+        a.caption("Idade med. = idade mediana, em anos. UTI (%) = casos com UTI = 1 sobre todos os "
+                  "casos (ignorado ou vazio conta como não). Óbito (%) = EVOLUCAO = 2 (óbito por SRAG) "
+                  "sobre todos os casos, inclusive sem evolução registrada; óbito por outras causas "
+                  "(3) não entra. O CSV traz também n_uti, n_obito e n_evolucao_conhecida (EVOLUCAO 1, 2 ou 3).")
         a.download_button("Baixar resumo (CSV)", csv_bytes(resumo), "srag_resumo.csv")
         faixas = faixa_etaria(srag_f["idade"])
         fx = (srag_f.assign(faixa=faixas).groupby(["faixa", "agente"], observed=True)
@@ -567,6 +582,8 @@ with t3:
             fig.update_yaxes(rangemode="tozero")
             fig.update_xaxes(tickformat="%m/%Y", dtick="M6")
             fig.update_layout(height=380, margin=dict(t=20))
+            censo_df = pd.DataFrame({"semana": censo.index, "admissoes": adm.values,
+                                     "pacientes": censo.values})
             mostrar(st, fig, "figura7_iso_censo", "iso_censo", FONTE_SIH,
                     f"Grupos: {'; '.join(iso)}. Participação do hospital: {estilo.fmt_dec(share)}%; "
                     f"permanência média {estilo.fmt_dec(perm)} dias (período inteiro). "
@@ -576,6 +593,8 @@ with t3:
                     f"baixa um pouco a média e o P90. {local_sih}. {per_sih}. Ponto de partida "
                     "de dimensionamento; não substitui dados do próprio hospital nem a norma "
                     f"aplicável (ex.: RDC 50/ANVISA, ABNT NBR 7256). {nota_oculto_sih}")
+            st.download_button("Baixar série semanal do censo (CSV)", csv_bytes(censo_df),
+                               "iso_censo_semanal.csv")
 
 # ------------------------------------------------------------------- aba 4
 with t4:

@@ -102,7 +102,11 @@ def texto_metodos(ufs, cobertura, comp_cnes=None, ano_pop=None, n_mes=0, n_sem=0
         "**notificação** (`CO_MUN_NOT`).",
         "- Agente da SRAG pela classificação final (`CLASSI_FIN`): 1 = Influenza, 2 = Outro "
         "vírus respiratório, 3 = Outro agente, 4 = Não especificado, 5 = COVID-19; "
-        "campo vazio = Em investigação.",
+        "campo vazio ou fora de 1 a 5 = Em investigação.",
+        "- Gravidade da SRAG: UTI (%) = casos com `UTI` = 1 sobre todos os casos (ignorado ou "
+        "vazio conta como não); Óbito (%) = `EVOLUCAO` = 2 (óbito por SRAG) sobre todos os casos, "
+        "inclusive sem evolução registrada; óbito por outras causas (3) não entra. O CSV do "
+        "resumo traz as contagens e o n com evolução conhecida (1, 2 ou 3).",
         f"- Período efetivo de cada fonte dentro do filtro: SIH {_periodo(cob_sih)}; "
         f"SRAG {_periodo(cob_srag)}. Cada taxa usa o período da própria fonte.",
         "",
@@ -205,6 +209,12 @@ def texto_metodos(ufs, cobertura, comp_cnes=None, ano_pop=None, n_mes=0, n_sem=0
         "denominador de todo o período.",
         "- Taxas de municípios pequenos oscilam muito; a suavização bayesiana empírica é "
         "global (não espacial) e só atenua esse efeito.",
+        f"- SIH: o numerador é incompleto, pois só são lidos arquivos de hospitais de {', '.join(UF_ALVO)}; "
+        "residentes dessas UFs internados em outras UFs não entram, e as taxas por residência ficam "
+        "subestimadas, sobretudo em municípios de divisa.",
+        "- Taxa de SRAG por município de notificação divide as notificações pela população "
+        "residente do município notificador: infla polos de referência (ex.: Fortaleza) e "
+        "desinfla a área de abrangência; não é taxa de incidência.",
         "- A primeira e a última semana do período podem estar incompletas.",
         "- Não há dado público de IRAS (infecção adquirida no hospital) em microdados.",
         "- A demanda de isolamento supõe regime estacionário, usa a permanência média do "

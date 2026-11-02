@@ -72,12 +72,13 @@ def fmt_dec(x, casas: int = 1) -> str:
     return f"{x:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def config_plotly(nome_arquivo: str) -> dict:
+def config_plotly(nome_arquivo: str, altura=None) -> dict:
+    """altura: a da figura na tela (px), para o SVG exportado não sair esticado; largura fixa."""
     return {
         "displaylogo": False,
         "modeBarButtonsToRemove": ["select2d", "lasso2d"],
         "toImageButtonOptions": {"format": "svg", "filename": nome_arquivo,
-                                 "width": 1200, "height": 700, "scale": 1},
+                                 "width": 1200, "height": int(altura or 700), "scale": 1},
     }
 
 

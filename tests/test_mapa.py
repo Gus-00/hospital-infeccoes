@@ -4,7 +4,7 @@ import pandas as pd
 from shapely.geometry import box
 
 from mapa import (agregar, fora_do_mapa, leitos_por_10mil, municipios_sem_pop,
-                  periodo_efetivo, taxa_bruta, taxa_eb)
+                  periodo_efetivo, resumo_gravidade, taxa_bruta, taxa_eb, taxa_so_na_uf)
 
 
 def test_eb_taxas_iguais_devolve_taxa_comum():
@@ -166,3 +166,21 @@ def test_municipios_sem_pop_conta_na_malha():
     pop = POP[POP["cod_mun"] != "230002"]
     assert municipios_sem_pop(geo_sintetico(), pop) == 1
     assert municipios_sem_pop(geo_sintetico(), POP) == 0
+
+
+def test_taxa_so_na_uf_poe_nan_fora_das_ufs():
+    r = taxa_so_na_uf([10.0, 20.0, 30.0], ["230440", "261160", "230370"], ["230440", "230370"])
+    assert r[0] == 10.0 and np.isnan(r[1]) and r[2] == 30.0
+
+
+def test_resumo_gravidade_sem_arredondar_e_com_contagens():
+    df = pd.DataFrame({"agente": ["A"] * 3 + ["B"],
+                       "uti": [True, False, False, False],
+                       "obito": [True, False, False, False],
+                       "evolucao": pd.array([2, 1, pd.NA, 9], dtype="Int64"),
+                       "idade": [10.0, 21.0, 32.0, 40.0]})
+    r = resumo_gravidade(df, ["A", "B"]).set_index("agente")
+    assert r.loc["A", "pct_uti"] == 100 / 3  # 33,333...: sem round
+    assert r.loc["A", "n_uti"] == 1 and r.loc["A", "n_obito"] == 1
+    assert r.loc["A", "n_evolucao_conhecida"] == 2 and r.loc["B", "n_evolucao_conhecida"] == 0
+    assert r.loc["A", "idade_mediana"] == 21.0

@@ -52,3 +52,9 @@ def test_config_plotly():
     assert c["displaylogo"] is False
     assert c["toImageButtonOptions"]["format"] == "svg"
     assert c["toImageButtonOptions"]["filename"] == "fig"
+
+
+def test_config_plotly_altura_da_figura():
+    assert estilo.config_plotly("fig")["toImageButtonOptions"]["height"] == 700
+    c = estilo.config_plotly("fig", 312)["toImageButtonOptions"]
+    assert (c["width"], c["height"]) == (1200, 312)

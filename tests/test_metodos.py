@@ -66,3 +66,12 @@ def test_cortes_e_formulas_sem_ambiguidade():
     assert "internações ocultas (na base carregada, antes dos filtros): 5.678" in texto
     assert r"\right] \times 100.000$$" in texto  # EB na mesma base da taxa bruta
     assert "divididas por 7" in texto
+
+
+def test_definicoes_e_limitacoes_novas():
+    texto = _texto()
+    assert "vazio ou fora de 1 a 5 = Em investigação" in texto
+    assert "sobre todos os casos, inclusive sem evolução registrada" in texto
+    assert "evolução conhecida" in texto
+    assert "o numerador é incompleto" in texto and "subestimadas" in texto
+    assert "não é taxa de incidência" in texto

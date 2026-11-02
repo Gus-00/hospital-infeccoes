@@ -91,3 +91,25 @@ def taxa_bruta(casos, pop, anos, base: float = 1e5) -> np.ndarray:
 
 def leitos_por_10mil(leitos, pop) -> np.ndarray:
     return taxa_bruta(leitos, pop, 1, 1e4)
+
+
+def taxa_so_na_uf(taxa, cod_mun, cods_uf) -> np.ndarray:
+    """NaN para municípios fora das UFs selecionadas (residentes de fora internados aqui):
+    a população nacional não é denominador comparável para o recorte."""
+    return np.where(pd.Series(cod_mun).isin(cods_uf).to_numpy(), np.asarray(taxa, dtype=float), np.nan)
+
+
+def resumo_gravidade(srag: pd.DataFrame, ordem: list[str]) -> pd.DataFrame:
+    """Gravidade por agente, sem arredondar. pct_uti e pct_obito têm como denominador todos
+    os casos do agente (UTI ignorado/vazio conta como não; óbito = EVOLUCAO 2). Traz as
+    contagens e o n com evolução conhecida (1, 2 ou 3) para quem preferir outro denominador."""
+    z = srag.assign(
+        conhecida=srag["evolucao"].isin([1, 2, 3]) if "evolucao" in srag else False)
+    r = z.groupby("agente").agg(casos=("agente", "size"), n_uti=("uti", "sum"),
+                                n_obito=("obito", "sum"), n_evolucao_conhecida=("conhecida", "sum"),
+                                idade_mediana=("idade", "median"))
+    r["pct_uti"] = 100 * r["n_uti"] / r["casos"]
+    r["pct_obito"] = 100 * r["n_obito"] / r["casos"]
+    r = r.reindex(ordem).reset_index()
+    return r[["agente", "casos", "n_uti", "pct_uti", "n_obito", "pct_obito",
+              "n_evolucao_conhecida", "idade_mediana"]]

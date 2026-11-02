@@ -39,7 +39,7 @@ def conectar():
 
 def nome_lt_valido(nome: str, uf: str) -> bool:
     """Aceita só LT{uf}AAMM.DBC (sem diferenciar maiúsculas/minúsculas)."""
-    return re.fullmatch(rf"LT{re.escape(uf)}\d{{4}}\.DBC", nome, re.IGNORECASE) is not None
+    return re.fullmatch(rf"LT{re.escape(uf)}[0-9]{{4}}\.DBC", nome, re.IGNORECASE) is not None
 
 
 def destino_seguro(nome: str) -> Path:
