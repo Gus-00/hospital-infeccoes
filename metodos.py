@@ -114,7 +114,8 @@ def texto_metodos(ufs, cobertura, comp_cnes=None, ano_pop=None, n_mes=0, n_sem=0
         oculto_sih = ("último mês oculto" if n_mes == 1 else f"últimos {n_mes} meses ocultos")
         oculto_sih += (" por faturamento incompleto da AIH"
                        + (f" (internações a partir de {desde:%d/%m/%Y})" if desde is not None else "")
-                       + f"; internações ocultas: {_n(c, 'sih_oculto')}")
+                       + f"; internações ocultas (na base carregada, antes dos filtros): "
+                         f"{_n(c, 'sih_oculto')}")
     else:
         oculto_sih = "nenhum mês oculto"
     if n_sem:
@@ -122,7 +123,8 @@ def texto_metodos(ufs, cobertura, comp_cnes=None, ano_pop=None, n_mes=0, n_sem=0
         oculto_srag = ("última semana oculta" if n_sem == 1 else f"últimas {n_sem} semanas ocultas")
         oculto_srag += (" por atraso de notificação"
                         + (f" (notificações depois de {apos:%d/%m/%Y})" if apos is not None else "")
-                        + f"; casos ocultos: {_n(c, 'srag_oculto')}")
+                        + f"; casos ocultos (na base carregada, antes dos filtros): "
+                          f"{_n(c, 'srag_oculto')}")
     else:
         oculto_srag = "nenhuma semana oculta"
     linhas += [
@@ -160,7 +162,7 @@ def texto_metodos(ufs, cobertura, comp_cnes=None, ano_pop=None, n_mes=0, n_sem=0
         r"s^2 = \frac{\sum n_i (r_i - m)^2}{\sum n_i}$$",
         "",
         r"$$A = \max\left(s^2 - \frac{m}{\bar{n}},\ 0\right), \quad "
-        r"w_i = \frac{A}{A + m / n_i}, \quad \hat{\theta}_i = w_i r_i + (1 - w_i)\, m$$",
+        r"w_i = \frac{A}{A + m / n_i}, \quad \hat{\theta}_i = \left[w_i r_i + (1 - w_i)\, m\right] \times 100.000$$",
         "",
         r"Leitos por 10 mil habitantes = leitos existentes / $P_i$ $\times$ 10.000.",
         "",
@@ -170,7 +172,9 @@ def texto_metodos(ufs, cobertura, comp_cnes=None, ano_pop=None, n_mes=0, n_sem=0
         r"$$L_s = \frac{\text{admissões na semana } s}{7} \times \bar{W} \times p$$",
         "",
         "P90: percentil 90 da série semanal de $L_s$ (interpolação linear); salas para "
-        r"cobrir o P90 = $\lceil P_{90} \rceil$. Semanas sem admissões entram com zero.",
+        r"cobrir o P90 = $\lceil P_{90} \rceil$. Semanas sem admissões entram com zero. As "
+        "semanas incompletas nas bordas do período (por exemplo, a cobertura do SIH termina "
+        "no meio da semana) também são divididas por 7, o que baixa um pouco a média e o P90.",
     ]
     if isolamento:
         g_iso, share = isolamento

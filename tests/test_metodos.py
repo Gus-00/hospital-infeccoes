@@ -59,3 +59,10 @@ def test_local_ufs():
 def test_fmt_competencia():
     assert metodos.fmt_comp("202609") == "09/2026"
     assert metodos.fmt_comp(None) == "não disponível"
+
+
+def test_cortes_e_formulas_sem_ambiguidade():
+    texto = _texto()
+    assert "internações ocultas (na base carregada, antes dos filtros): 5.678" in texto
+    assert r"\right] \times 100.000$$" in texto  # EB na mesma base da taxa bruta
+    assert "divididas por 7" in texto

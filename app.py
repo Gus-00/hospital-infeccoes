@@ -551,11 +551,12 @@ with t3:
             fig.update_xaxes(tickformat="%m/%Y", dtick="M6")
             fig.update_layout(height=380, margin=dict(t=20))
             mostrar(st, fig, "figura7_iso_censo", "iso_censo", FONTE_SIH,
-                    f"Grupos: {'; '.join(iso)}. Participação do hospital: {estilo.fmt_dec(share)}%. "
-                    f"Pacientes simultâneos = admissões por dia × permanência média "
-                    f"({estilo.fmt_dec(perm)} dias, período inteiro) × participação (Lei de Little); "
-                    f"semanas sem admissão contam como zero. P90 = {estilo.fmt_dec(p90, 2)}; pico "
-                    f"semanal = {estilo.fmt_dec(pico, 2)}. {local_sih}. {per_sih}. Ponto de partida "
+                    f"Grupos: {'; '.join(iso)}. Participação do hospital: {estilo.fmt_dec(share)}%; "
+                    f"permanência média {estilo.fmt_dec(perm)} dias (período inteiro). "
+                    f"P90 = {estilo.fmt_dec(p90, 2)}; pico semanal = {estilo.fmt_dec(pico, 2)}. "
+                    "Fórmula (Lei de Little) na aba Métodos. Semanas sem admissão contam como zero; "
+                    "semanas incompletas nas bordas do período também são divididas por 7, o que "
+                    f"baixa um pouco a média e o P90. {local_sih}. {per_sih}. Ponto de partida "
                     "de dimensionamento; não substitui dados do próprio hospital nem a norma "
                     f"aplicável (ex.: RDC 50/ANVISA, ABNT NBR 7256). {nota_oculto_sih}")
 
